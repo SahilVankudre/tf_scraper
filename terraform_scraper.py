@@ -5,19 +5,15 @@ import re
 from pathlib import Path
 from typing import List, Dict, Optional
 
-# ─────────────────────────────────────────────
-# CONFIG
-# ─────────────────────────────────────────────
 REGISTRY_API      = "https://registry.terraform.io/v1/modules"
 RAW_BASE          = "https://raw.githubusercontent.com"
-TREE_API          = "https://api.github.com/repos"       # public tree endpoint - no auth needed
+TREE_API          = "https://api.github.com/repos"       
 DEFAULT_BRANCHES  = ["main", "master"]
 TARGET_FOLDERS    = {"examples", "wrappers"}
 MIN_FILE_BYTES    = 50
 MAX_FILE_BYTES    = 50_000
-REQUEST_DELAY     = 0.4   # seconds between requests
+REQUEST_DELAY     = 0.4   
 
-# License keywords mapped to SPDX IDs
 LICENSE_KEYWORD_MAP = {
     "apache license 2.0":          "apache-2.0",
     "apache license, version 2.0": "apache-2.0",
@@ -35,9 +31,6 @@ LICENSE_KEYWORD_MAP = {
 
 ACCEPTED_LICENSES = set(LICENSE_KEYWORD_MAP.values())
 
-# ─────────────────────────────────────────────
-# SESSION
-# ─────────────────────────────────────────────
 session = requests.Session()
 session.headers.update({"User-Agent": "TerraformDatasetBuilder/1.0"})
 
@@ -58,9 +51,6 @@ def get(url: str, timeout: int = 20) -> Optional[requests.Response]:
     return None
 
 
-# ─────────────────────────────────────────────
-# SERVICES CONFIG
-# ─────────────────────────────────────────────
 def load_services_config(path: str = "services_config.json") -> Dict[str, List[str]]:
     cfg_path = Path(path)
     if not cfg_path.exists():
@@ -80,9 +70,6 @@ def load_services_config(path: str = "services_config.json") -> Dict[str, List[s
     return config
 
 
-# ─────────────────────────────────────────────
-# TERRAFORM REGISTRY
-# ─────────────────────────────────────────────
 def fetch_registry_modules(provider: str, page_limit: int = 100) -> List[Dict]:
     """Paginate through the Terraform Registry for a given provider."""
     modules, offset = [], 0
@@ -135,9 +122,6 @@ def parse_github_owner_repo(source_url: str) -> Optional[tuple]:
     return (m.group(1), m.group(2)) if m else None
 
 
-# ─────────────────────────────────────────────
-# LICENSE CHECK  (no auth — reads raw LICENSE file)
-# ─────────────────────────────────────────────
 LICENSE_FILENAMES = ["LICENSE", "LICENSE.md", "LICENSE.txt", "license", "License"]
 
 def detect_license(owner: str, repo: str, branch: str) -> Optional[str]:
@@ -157,10 +141,9 @@ def detect_license(owner: str, repo: str, branch: str) -> Optional[str]:
             if keyword in content_lower:
                 return spdx_id
 
-        # If file exists but no keyword matched — mark as unknown
         return "unknown"
 
-    return None   # No LICENSE file found
+    return None   
 
 
 def get_default_branch(owner: str, repo: str) -> str:
@@ -176,7 +159,6 @@ def get_default_branch(owner: str, repo: str) -> str:
         if branch:
             return branch
 
-    # Fallback: probe raw URLs
     for branch in DEFAULT_BRANCHES:
         probe = f"{RAW_BASE}/{owner}/{repo}/{branch}/README.md"
         r     = get(probe)
@@ -185,10 +167,6 @@ def get_default_branch(owner: str, repo: str) -> str:
 
     return "main"
 
-
-# ─────────────────────────────────────────────
-# REPO TREE  (public GitHub tree API — no auth)
-# ─────────────────────────────────────────────
 def get_repo_tree(owner: str, repo: str, branch: str) -> List[Dict]:
     """
     Fetch the full recursive file tree of a repo using GitHub's public
@@ -217,16 +195,12 @@ def filter_target_tf_files(tree: List[Dict]) -> List[str]:
         path = item.get("path", "")
         if not path.endswith(".tf"):
             continue
-        # Check any path segment matches target folders
+       
         parts = path.lower().split("/")
         if any(part in TARGET_FOLDERS for part in parts):
             target_paths.append(path)
     return target_paths
 
-
-# ─────────────────────────────────────────────
-# FILE DOWNLOAD  (raw URLs — no auth, no rate limit)
-# ─────────────────────────────────────────────
 def download_tf_file(owner: str, repo: str, branch: str, path: str) -> Optional[str]:
     """Download a .tf file directly via raw.githubusercontent.com."""
     url  = f"{RAW_BASE}/{owner}/{repo}/{branch}/{path}"
@@ -239,9 +213,6 @@ def download_tf_file(owner: str, repo: str, branch: str, path: str) -> Optional[
     return None
 
 
-# ─────────────────────────────────────────────
-# DATASET BUILDER
-# ─────────────────────────────────────────────
 def save_tf_file(content: str, output_dir: Path, provider: str,
                  service: str, module_id: str, filename: str):
     """Save a .tf file preserving provider/service/module hierarchy."""
@@ -264,7 +235,6 @@ def process_module(module: Dict, provider: str, output_dir: Path) -> Dict:
         "license": None, "files_saved": 0, "status": "skipped"
     }
 
-    # 1 — Get GitHub source URL from registry
     source = get_module_source(ns, name, provider)
     time.sleep(REQUEST_DELAY)
     if not source:
@@ -279,11 +249,9 @@ def process_module(module: Dict, provider: str, output_dir: Path) -> Dict:
     owner, repo = gh
     print(f"    → {owner}/{repo}")
 
-    # 2 — Detect default branch
     branch = get_default_branch(owner, repo)
     time.sleep(REQUEST_DELAY)
 
-    # 3 — License check via raw LICENSE file (no token needed)
     license_id = detect_license(owner, repo, branch)
     result["license"] = license_id
     time.sleep(REQUEST_DELAY)
@@ -295,14 +263,12 @@ def process_module(module: Dict, provider: str, output_dir: Path) -> Dict:
 
     print(f"    ✓ License accepted: {license_id}")
 
-    # 4 — Get full repo tree (single public API call)
     tree = get_repo_tree(owner, repo, branch)
     time.sleep(REQUEST_DELAY)
     if not tree:
         result["status"] = "empty_tree"
         return result
 
-    # 5 — Filter to .tf files inside examples / wrappers only
     tf_paths = filter_target_tf_files(tree)
     if not tf_paths:
         print(f"    ✗ No .tf files in examples/wrappers")
@@ -311,7 +277,6 @@ def process_module(module: Dict, provider: str, output_dir: Path) -> Dict:
 
     print(f"    ✓ Found {len(tf_paths)} .tf files in target folders")
 
-    # 6 — Download and save each file
     for path in tf_paths:
         content = download_tf_file(owner, repo, branch, path)
         time.sleep(REQUEST_DELAY)
@@ -324,10 +289,6 @@ def process_module(module: Dict, provider: str, output_dir: Path) -> Dict:
     print(f"    ✓ Saved {result['files_saved']} files")
     return result
 
-
-# ─────────────────────────────────────────────
-# MAIN
-# ─────────────────────────────────────────────
 def run(services_config_path: str = "services_config.json",
         output_dir: str = "terraform_training_data",
         max_modules_per_provider: Optional[int] = None):
@@ -342,10 +303,8 @@ def run(services_config_path: str = "services_config.json",
         print(f"PROVIDER: {provider.upper()}")
         print(f"{'='*60}")
 
-        # Fetch all modules for this provider
         all_modules = fetch_registry_modules(provider)
 
-        # Keep only modules matching configured services
         modules = filter_by_service(all_modules, services)
 
         if max_modules_per_provider:
@@ -361,7 +320,6 @@ def run(services_config_path: str = "services_config.json",
             if res["status"] == "success":
                 succeeded += 1
 
-        # Per-provider summary
         all_stats[provider] = {
             "total": len(results),
             "succeeded": succeeded,
@@ -370,7 +328,6 @@ def run(services_config_path: str = "services_config.json",
 
         print(f"\n  Summary — {provider}: {succeeded}/{len(results)} modules scraped successfully")
 
-    # Save full run summary
     summary_path = out / "scrape_summary.json"
     summary_path.write_text(json.dumps(all_stats, indent=2))
 
@@ -383,11 +340,12 @@ def run(services_config_path: str = "services_config.json",
 
 if __name__ == "__main__":
     import sys
-    # Guard against multiple execution in some IDEs
+
     if not hasattr(sys, '_scraper_running'):
         sys._scraper_running = True
         run(
             services_config_path="services_config.json",
             output_dir="terraform_training_data",
-            max_modules_per_provider=5       # set to None for full run
+            max_modules_per_provider=5       
+
         )
