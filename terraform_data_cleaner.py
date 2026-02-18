@@ -4,13 +4,9 @@ import hashlib
 from pathlib import Path
 from typing import List, Dict, Optional
 
-# ─────────────────────────────────────────────
-# CONFIG
-# ─────────────────────────────────────────────
 MIN_FILE_CHARS = 50
 MAX_FILE_CHARS = 50_000
 
-# Sensitive data patterns to detect and sanitize
 SENSITIVE_PATTERNS = [
     (r'(?i)(password\s*=\s*")[^"]+(")',        'var.password'),
     (r'(?i)(secret\s*=\s*")[^"]+(")',          'var.secret'),
@@ -22,10 +18,6 @@ SENSITIVE_PATTERNS = [
     (r'-----BEGIN (?:RSA |EC )?PRIVATE KEY-----[\s\S]+?-----END[^-]+-----', '# PRIVATE KEY REMOVED'),
 ]
 
-
-# ─────────────────────────────────────────────
-# CLEANING FUNCTIONS
-# ─────────────────────────────────────────────
 def compute_hash(content: str) -> str:
     """Hash normalized content for deduplication."""
     normalized = re.sub(r'#.*$',      '', content, flags=re.MULTILINE)
@@ -55,7 +47,7 @@ def sanitize_sensitive(content: str) -> tuple[str, List[str]]:
     for pattern, replacement in SENSITIVE_PATTERNS:
         if re.search(pattern, content):
             found.append(pattern)
-            # Preserve the key name, replace only the value
+
             if '(' in pattern:
                 content = re.sub(pattern, lambda m: f'{m.group(1)}{replacement}{m.group(2)}', content)
             else:
@@ -69,23 +61,20 @@ def remove_comments(content: str) -> str:
     Preserves doc-style comments (## or ///).
     Skips comment chars inside strings.
     """
-    # Remove block comments
+
     content = re.sub(r'/\*.*?\*/', '', content, flags=re.DOTALL)
 
     cleaned_lines = []
     for line in content.splitlines():
         stripped = line.lstrip()
 
-        # Preserve doc comments
         if stripped.startswith('##') or stripped.startswith('///'):
             cleaned_lines.append(line)
             continue
 
-        # Skip pure comment lines
         if stripped.startswith('#') or stripped.startswith('//'):
             continue
 
-        # Strip inline comments (not inside strings)
         in_str, result, i = False, [], 0
         while i < len(line):
             ch = line[i]
@@ -107,13 +96,11 @@ def remove_comments(content: str) -> str:
 
 def standardize_formatting(content: str) -> str:
     """Normalize whitespace, indentation, blank lines."""
-    # Tabs → 2 spaces
+
     content = content.replace('\t', '  ')
 
-    # Remove trailing whitespace per line
     lines = [l.rstrip() for l in content.splitlines()]
 
-    # Collapse multiple blank lines into one
     cleaned, prev_blank = [], False
     for line in lines:
         blank = not line.strip()
@@ -122,7 +109,6 @@ def standardize_formatting(content: str) -> str:
         cleaned.append(line)
         prev_blank = blank
 
-    # Strip leading/trailing blank lines
     while cleaned and not cleaned[0].strip():
         cleaned.pop(0)
     while cleaned and not cleaned[-1].strip():
@@ -136,47 +122,37 @@ def clean_file(content: str, seen_hashes: set) -> tuple[Optional[str], str]:
     Full cleaning pipeline for a single .tf file.
     Returns (cleaned_content | None, reason_if_skipped)
     """
-    # Size check (raw)
+
     if len(content) < MIN_FILE_CHARS:
         return None, "too_small"
     if len(content) > MAX_FILE_CHARS:
         return None, "too_large"
 
-    # Deduplication
     if compute_hash(content) in seen_hashes:
         return None, "duplicate"
     seen_hashes.add(compute_hash(content))
 
-    # Syntax validation
     if not is_valid_terraform(content):
         return None, "invalid_syntax"
 
-    # Sensitive data sanitization
     content, sensitive_found = sanitize_sensitive(content)
 
-    # Remove comments
     content = remove_comments(content)
 
-    # Standardize formatting
     content = standardize_formatting(content)
 
-    # Size check again after cleaning
     if len(content) < MIN_FILE_CHARS:
         return None, "too_small_after_clean"
 
     return content, "ok"
 
-
-# ─────────────────────────────────────────────
-# DATASET BUILDER
-# ─────────────────────────────────────────────
 def build_training_sample(provider: str, service: str,
                           module: str, filename: str, content: str) -> Dict:
     """
     Build a single training sample in instruction-response format
     suitable for fine-tuning (compatible with most fine-tuning frameworks).
     """
-    # Derive a natural language description from metadata
+
     cloud_map = {
         "aws": "AWS", "google": "GCP",
         "azurerm": "Azure", "oci": "Oracle Cloud"
@@ -203,10 +179,6 @@ def build_training_sample(provider: str, service: str,
         }
     }
 
-
-# ─────────────────────────────────────────────
-# MAIN CLEANER
-# ─────────────────────────────────────────────
 class TerraformDataCleaner:
 
     def __init__(self, input_dir: str = "terraform_training_data",
@@ -236,7 +208,6 @@ class TerraformDataCleaner:
         print(f"  Provider: {provider.upper()}")
         print(f"{'='*60}")
 
-        # Structure: provider/service/module/file.tf
         for service_dir in sorted(provider_dir.iterdir()):
             if not service_dir.is_dir():
                 continue
@@ -258,12 +229,10 @@ class TerraformDataCleaner:
                         self.stats[reason] = self.stats.get(reason, 0) + 1
                         continue
 
-                    # Save cleaned .tf file
                     dest = (self.output_dir / provider / service / module / tf_file.name)
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     dest.write_text(cleaned, encoding="utf-8")
 
-                    # Build training sample
                     sample = build_training_sample(
                         provider, service, module, tf_file.name, cleaned
                     )
@@ -288,17 +257,14 @@ class TerraformDataCleaner:
             samples = self.process_provider(provider_dir)
             all_samples.extend(samples)
 
-        # ── Save JSONL (for fine-tuning frameworks: LLaMA-Factory, Axolotl, etc.)
         jsonl_path = self.output_dir / "training_dataset.jsonl"
         with open(jsonl_path, "w", encoding="utf-8") as f:
             for s in all_samples:
                 f.write(json.dumps(s) + "\n")
 
-        # ── Save JSON (for inspection)
         json_path = self.output_dir / "training_dataset.json"
         json_path.write_text(json.dumps(all_samples, indent=2), encoding="utf-8")
 
-        # ── Save metadata summary
         summary = {
             "total_training_samples": len(all_samples),
             "cleaning_stats": self.stats,
@@ -307,7 +273,6 @@ class TerraformDataCleaner:
         summary_path = self.output_dir / "cleaning_summary.json"
         summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
-        # ── Print stats
         print(f"\n{'='*60}")
         print("  CLEANING STATS")
         print(f"{'='*60}")
@@ -325,13 +290,10 @@ class TerraformDataCleaner:
         print("  ✓ Cleaning complete!")
         print(f"{'='*60}\n")
 
-
-# ─────────────────────────────────────────────
-# ENTRY POINT
-# ─────────────────────────────────────────────
 if __name__ == "__main__":
     cleaner = TerraformDataCleaner(
         input_dir="terraform_training_data",
         output_dir="terraform_cleaned_data"
     )
+
     cleaner.clean_all()
